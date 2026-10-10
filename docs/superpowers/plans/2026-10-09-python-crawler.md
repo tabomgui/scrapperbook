@@ -1298,6 +1298,14 @@ def test_classify_status_treats_server_errors_as_network():
 def test_classify_status_returns_none_for_success():
     assert classify_status(200) is None
     assert classify_status(304) is None
+
+
+def test_classify_url_does_not_false_positive_on_a_similar_looking_path():
+    # These paths merely contain the marker words as a prefix of a longer
+    # segment — none of them are an actual login wall or checkpoint.
+    assert classify_url("https://www.facebook.com/marketplace/profile/logintips2024/") is None
+    assert classify_url("https://www.facebook.com/marketplace/category/recovered-electronics/") is None
+    assert classify_url("https://www.facebook.com/checkpointer-vintage-store/") is None
 ```
 
 - [ ] **Step 2: Rodar e confirmar falha**
@@ -1318,15 +1326,21 @@ from urllib.parse import urlsplit
 
 from crawler.errors import ErrorKind
 
-_CHECKPOINT_MARKERS = ("/checkpoint", "/two_step_verification", "/recover")
-_LOGIN_MARKERS = ("/login",)
+_CHECKPOINT_SEGMENTS = ("checkpoint", "two_step_verification", "recover")
+_LOGIN_SEGMENTS = ("login",)
 
 
 def classify_url(url: str) -> ErrorKind | None:
-    path = urlsplit(url).path
-    if any(marker in path for marker in _CHECKPOINT_MARKERS):
+    # Match whole path segments, not a raw substring: "/login" must not
+    # match "/logintips2024" the way `"/login" in path` would. This matters
+    # because a false positive here pauses the entire source until manual
+    # relogin (see the backend's reaction table) — an expensive mistake to
+    # make on a normal marketplace/profile/category path that merely starts
+    # with one of these words.
+    segments = urlsplit(url).path.split("/")
+    if any(marker in segments for marker in _CHECKPOINT_SEGMENTS):
         return ErrorKind.CHECKPOINT
-    if any(marker in path for marker in _LOGIN_MARKERS):
+    if any(marker in segments for marker in _LOGIN_SEGMENTS):
         return ErrorKind.LOGIN_REQUIRED
     return None
 
@@ -1342,7 +1356,7 @@ def classify_status(status: int) -> ErrorKind | None:
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `cd crawler && .venv/bin/pytest tests/facebook/test_detect.py -v`
-Expected: 7 testes PASS.
+Expected: 8 testes PASS.
 
 - [ ] **Step 5: Commit**
 
