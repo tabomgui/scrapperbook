@@ -555,6 +555,8 @@ Wraps every `/internal/v1` call behind one class. `claim()` returns `None` on HT
 `crawler/tests/test_api.py`:
 
 ```python
+import json
+
 import httpx
 import pytest
 import respx
@@ -578,14 +580,23 @@ def test_register_sends_bearer_token_and_body(client):
     client.register(hostname="box", crawler_version="0.1.0", sources=["facebook_marketplace"])
     req = route.calls.last.request
     assert req.headers["authorization"] == f"Bearer {TOKEN}"
-    assert req.json() == {"worker_id": "w1", "hostname": "box",
-                           "crawler_version": "0.1.0", "sources": ["facebook_marketplace"]}
+    # httpx.Request has no .json() (only httpx.Response does) — decode the
+    # raw body instead.
+    assert json.loads(req.content) == {"worker_id": "w1", "hostname": "box",
+                                        "crawler_version": "0.1.0", "sources": ["facebook_marketplace"]}
 
 
 @respx.mock
 def test_heartbeat_posts_to_the_right_path(client):
     respx.post(f"{BASE}/internal/v1/workers/w1/heartbeat").mock(return_value=httpx.Response(204))
     client.heartbeat(status="idle")  # must not raise
+
+
+@respx.mock
+def test_heartbeat_sends_current_job_id_when_given(client):
+    route = respx.post(f"{BASE}/internal/v1/workers/w1/heartbeat").mock(return_value=httpx.Response(204))
+    client.heartbeat(status="busy", current_job_id="j1")
+    assert json.loads(route.calls.last.request.content) == {"status": "busy", "current_job_id": "j1"}
 
 
 @respx.mock
@@ -662,7 +673,16 @@ from typing import Any
 
 import httpx
 
-from crawler.contracts import ClaimedJob, FailRequest, Outcome, Registration, ResultItem, ResultRequest, Stats
+from crawler.contracts import (
+    ClaimedJob,
+    FailRequest,
+    HeartbeatRequest,
+    Outcome,
+    Registration,
+    ResultItem,
+    ResultRequest,
+    Stats,
+)
 
 
 class APIError(Exception):
@@ -702,8 +722,8 @@ class APIClient:
         self._post("/internal/v1/workers/register", reg.model_dump())
 
     def heartbeat(self, status: str, current_job_id: str | None = None) -> None:
-        self._post(f"/internal/v1/workers/{self.worker_id}/heartbeat",
-                    {"status": status, "current_job_id": current_job_id})
+        req = HeartbeatRequest(status=status, current_job_id=current_job_id)
+        self._post(f"/internal/v1/workers/{self.worker_id}/heartbeat", req.model_dump())
 
     def claim(self, sources: list[str], types: list[str]) -> ClaimedJob | None:
         resp = self._post("/internal/v1/jobs/claim",
@@ -732,7 +752,7 @@ Note: `claim`'s `_post` call treats 204 specially by checking `resp.status_code`
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `cd crawler && .venv/bin/pytest tests/test_api.py -v`
-Expected: 8 testes PASS.
+Expected: 9 testes PASS.
 
 - [ ] **Step 5: Commit**
 
