@@ -1426,6 +1426,13 @@ def test_bad_poll_interval_raises():
     with pytest.raises(ConfigError):
         Settings.load(env({"API_BASE_URL": "http://api:8080", "WORKER_TOKEN": "t",
                             "POLL_INTERVAL_SECONDS": "soon"}))
+
+
+def test_non_positive_poll_interval_raises():
+    for bad in ("0", "-5"):
+        with pytest.raises(ConfigError):
+            Settings.load(env({"API_BASE_URL": "http://api:8080", "WORKER_TOKEN": "t",
+                                "POLL_INTERVAL_SECONDS": bad}))
 ```
 
 - [ ] **Step 2: Rodar e confirmar falha**
@@ -1485,6 +1492,10 @@ class Settings:
             poll_interval = int(_or(getenv("POLL_INTERVAL_SECONDS"), "10"))
         except ValueError as e:
             raise ConfigError(f"POLL_INTERVAL_SECONDS: {e}") from e
+        if poll_interval <= 0:
+            # 0 wouldn't error anywhere downstream, it would turn the worker's
+            # poll loop into a busy-loop with no backoff between claim calls.
+            raise ConfigError(f"POLL_INTERVAL_SECONDS: must be positive, got {poll_interval}")
 
         worker_id = _or(getenv("WORKER_ID"), socket.gethostname())
         return cls(
@@ -1502,7 +1513,7 @@ class Settings:
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `cd crawler && .venv/bin/pytest tests/test_config.py -v`
-Expected: 4 testes PASS.
+Expected: 5 testes PASS.
 
 - [ ] **Step 5: Commit**
 
