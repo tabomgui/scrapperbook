@@ -1892,6 +1892,8 @@ Expected: 2 testes PASS.
 
 - [ ] **Step 5: Implementar o adapter (sem teste automatizado — veja a nota acima)**
 
+Since this file has no automated test coverage, it got an unusually careful two-reviewer pass that found two real, independently-confirmed bugs in an earlier draft of this code: (1) a `CrawlError` raised inside the `page.on("response", ...)` fire-and-forget callback never reached the caller — Playwright event listeners have no native async support, so `asyncio.ensure_future(on_response(r))` schedules an orphaned Task nothing awaits, silently losing any exception raised inside it; this defeated rate-limit/network error classification entirely. (2) `parse_graphql_response`'s documented `None` (wrong shape) vs. `[]` (real response, zero listings) distinction was being discarded by `if items:` truthiness, so a genuine zero-result search was misreported as `LAYOUT_CHANGED`. The code below already has both fixes baked in — a `pending_error` variable (set via `nonlocal` inside the callback, checked at the same points the method already checks for a checkpoint redirect) and a `saw_valid_response` flag preserving the `None`-vs-`[]` distinction.
+
 `crawler/src/crawler/sources/facebook/run.py`:
 
 ```python
@@ -1939,19 +1941,38 @@ class FacebookAdapter:
             raise CrawlError(ErrorKind.LOGIN_REQUIRED, "no active facebook session in the browser profile")
 
         captured: list[dict] = []
+        # True once we've seen at least one correctly-shaped GraphQL search
+        # response, even if it carried zero listings — distinguishes "ran a
+        # real search that genuinely matched nothing" (success, per design
+        # spec §4.4 "0 resultados não é erro") from "never managed to parse
+        # anything, something's broken" (CrawlError.LAYOUT_CHANGED below).
+        saw_valid_response = False
+        # page.on("response", ...) callbacks run as fire-and-forget asyncio
+        # Tasks (Playwright has no native async-listener support) — nothing
+        # awaits on_response directly, so a CrawlError raised inside it would
+        # never reach this method's await chain, it would just be logged by
+        # asyncio as "exception was never retrieved" and silently lost. Stash
+        # it here instead, and check it at every point this method already
+        # checks for a checkpoint redirect.
+        pending_error: CrawlError | None = None
         page = await context.new_page()
 
         async def on_response(response: Response) -> None:
+            nonlocal saw_valid_response, pending_error
+            if "/api/graphql/" not in response.url:
+                return
             status_kind = classify_status(response.status)
             if status_kind is not None:
-                raise CrawlError(status_kind, f"http {response.status} on {response.url}")
-            if "/api/graphql/" not in response.url:
+                pending_error = CrawlError(status_kind, f"http {response.status} on {response.url}")
                 return
             try:
                 body = await response.json()
             except Exception:  # noqa: BLE001 - not every graphql call returns JSON we care about
                 return
             items = parse_graphql_response(body)
+            if items is None:
+                return  # wrong shape, not a search response — not evidence either way
+            saw_valid_response = True
             if items:
                 captured.extend(items)
 
@@ -1960,23 +1981,39 @@ class FacebookAdapter:
         url = build_search_url(job.region.fb_location, job.search.keyword, job.search.filters)
         await page.goto(url, wait_until="domcontentloaded")
 
+        # pending_error (rate limit/network, from a response) is checked
+        # before the checkpoint redirect (from the page URL) at both points
+        # below. If both are true on the same tick, pending_error wins and
+        # the checkpoint is only caught on a later retry's goto/scroll check
+        # — a one-attempt delay in surfacing the more serious signal, not
+        # data loss, since classify_url is stateless and re-evaluated every
+        # time. Not fixed on purpose: no evidence yet that this ordering
+        # matters in practice, and guessing at a "right" priority without a
+        # real occurrence to go by risks getting it wrong in some other way.
+        if pending_error is not None:
+            raise pending_error
         checkpoint = classify_url(page.url)
         if checkpoint is not None:
             raise CrawlError(checkpoint, f"redirected to {page.url}")
 
-        if not captured:
-            captured.extend(parse_embedded_json(await page.content()))
+        if not captured and not saw_valid_response:
+            fallback_items = parse_embedded_json(await page.content())
+            if fallback_items:
+                captured.extend(fallback_items)
+                saw_valid_response = True
 
         pages_scrolled = 0
         while pages_scrolled < job.limits.max_pages and len(captured) < job.limits.max_items:
             await page.mouse.wheel(0, 2000)
             await page.wait_for_timeout(int(self.scroll_pause_seconds * 1000))
             pages_scrolled += 1
+            if pending_error is not None:
+                raise pending_error
             checkpoint = classify_url(page.url)
             if checkpoint is not None:
                 raise CrawlError(checkpoint, f"redirected to {page.url} mid-scroll")
 
-        if not captured:
+        if not captured and not saw_valid_response:
             raise CrawlError(ErrorKind.LAYOUT_CHANGED, "no listings captured from graphql or embedded json")
 
         seen_external_ids: set[str] = set()
