@@ -2121,19 +2121,40 @@ The automated check in this task brings up the **real** Postgres + Go API + Pyth
 
 import os
 import socket
+import time
 
 from crawler.api import APIClient
 from crawler.config import Settings
 from crawler.sources.facebook.run import FacebookAdapter
 from crawler.worker import run_forever
 
+# depends_on: api only waits for the container to start, not for the Go
+# server inside it to be accepting connections — register() can briefly
+# fail on a cold start. Retry a few times before giving up, rather than
+# crashing the whole container (and the Xvfb/x11vnc/websockify it already
+# started) over a race that resolves itself in a second or two.
+REGISTER_RETRIES = 5
+REGISTER_RETRY_DELAY_SECONDS = 3
+
+
+def register_with_retry(api: APIClient, settings: Settings) -> None:
+    for attempt in range(1, REGISTER_RETRIES + 1):
+        try:
+            api.register(hostname=socket.gethostname(), crawler_version=settings.crawler_version,
+                          sources=settings.sources)
+            return
+        except Exception as e:  # noqa: BLE001 - any connection error here is worth retrying the same way
+            if attempt == REGISTER_RETRIES:
+                raise
+            print(f"register attempt {attempt}/{REGISTER_RETRIES} failed ({e}); retrying...")
+            time.sleep(REGISTER_RETRY_DELAY_SECONDS)
+
 
 def main() -> None:
     settings = Settings.load(os.environ.get)
     api = APIClient(base_url=settings.api_base_url, token=settings.worker_token,
                      worker_id=settings.worker_id)
-    api.register(hostname=socket.gethostname(), crawler_version=settings.crawler_version,
-                  sources=settings.sources)
+    register_with_retry(api, settings)
     adapters = {"facebook_marketplace": FacebookAdapter(profile_dir=settings.profile_dir)}
     print(f"worker {settings.worker_id!r} registered, polling for {settings.sources} jobs...")
     run_forever(
@@ -2161,10 +2182,30 @@ set -e
 # websockify bridges that to the browser-based noVNC client on :6080.
 # Needed even in "worker" mode because Playwright still launches a real
 # (non-headless-in-the-Chromium-sense, but display-less-without-Xvfb) browser.
+#
+# set -e doesn't catch any of these dying: a backgrounded command returns
+# success the instant the fork succeeds, regardless of what the child does
+# afterward. Without an explicit check, a dead Xvfb surfaces later as an
+# opaque X11 connection error inside Playwright, misclassified by the
+# worker loop as a generic NETWORK failure — check each process is still
+# running after it's had a moment to fail, so a startup problem is loud
+# and specific instead of silent.
 Xvfb :99 -screen 0 1280x900x24 &
+XVFB_PID=$!
 x11vnc -display :99 -nopw -listen 0.0.0.0 -xkb -forever -quiet &
+X11VNC_PID=$!
 websockify --web /usr/share/novnc 6080 localhost:5900 &
+WEBSOCKIFY_PID=$!
 sleep 1
+
+for name_pid in "Xvfb:$XVFB_PID" "x11vnc:$X11VNC_PID" "websockify:$WEBSOCKIFY_PID"; do
+    name="${name_pid%%:*}"
+    pid="${name_pid##*:}"
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "entrypoint: $name (pid $pid) failed to start" >&2
+        exit 1
+    fi
+done
 
 if [ "$WORKER_MODE" = "login" ]; then
     exec python scripts/login.py
@@ -2195,11 +2236,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
-COPY scripts ./scripts
 # playwright is already a declared dependency (pyproject.toml), so `pip
 # install -e .` pulls in the Python package; this only needs to additionally
-# download the browser binary + its OS-level deps.
-RUN pip install -e . && playwright install --with-deps chromium
+# download the browser binary + its OS-level deps. scripts/ is copied AFTER
+# this (not alongside src/) so editing scripts/login.py or run_worker.py
+# doesn't bust this layer's cache and force a full chromium re-download.
+# rm -rf /var/lib/apt/lists/* is appended here too, since `playwright
+# install --with-deps` runs its own internal apt-get install that would
+# otherwise leave that cache permanently baked into this layer.
+RUN pip install -e . \
+    && playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts ./scripts
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -2273,7 +2321,7 @@ LOGS_PID=$!
 sleep 90
 kill $LOGS_PID
 ```
-Expected in the crawler logs: a line like `worker '<hostname>' registered, polling for ['facebook_marketplace'] jobs...`, then (once the scheduler has ticked and the crawler has claimed) no crash, no traceback — the adapter raises `CrawlError(LOGIN_REQUIRED, ...)` internally, which `run_once` catches and reports via `submit_fail`, so nothing should print an unhandled exception.
+Expected in the crawler logs: `worker 'crawler' registered, polling for ['facebook_marketplace'] jobs...` (confirms `WORKER_ID: crawler` from `compose.yaml` took effect, not a container-hostname fallback), then (once the scheduler has ticked and the crawler has claimed) no crash, no traceback — the adapter raises `CrawlError(LOGIN_REQUIRED, ...)` internally, which `run_once` catches and reports via `submit_fail`, so nothing should print an unhandled exception.
 
 Then check the database state:
 ```bash
