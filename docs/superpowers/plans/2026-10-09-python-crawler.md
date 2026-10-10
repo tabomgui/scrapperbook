@@ -2196,9 +2196,10 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY src ./src
 COPY scripts ./scripts
-RUN pip install -e . \
-    && pip install playwright \
-    && playwright install --with-deps chromium
+# playwright is already a declared dependency (pyproject.toml), so `pip
+# install -e .` pulls in the Python package; this only needs to additionally
+# download the browser binary + its OS-level deps.
+RUN pip install -e . && playwright install --with-deps chromium
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
@@ -2219,6 +2220,12 @@ Read the current `compose.yaml` (has `postgres` and `api` from plan 1). Insert `
       API_BASE_URL: http://api:8080
       WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
       WORKER_MODE: ${WORKER_MODE:-worker}
+      # Without this, Settings.load falls back to socket.gethostname(),
+      # which is the container's Docker-assigned ID — stable across a plain
+      # restart, but different on every `docker compose up --build`/recreate.
+      # Each recreate would then register as a brand-new `workers` row in
+      # the backend instead of reusing one (Register upserts on worker_id).
+      WORKER_ID: crawler
     volumes:
       - crawler_profile:/data/profile
       - crawler_debug:/data/debug
