@@ -948,6 +948,9 @@ The fixture here is **synthetic**, built from the node shape documented by the o
           },
           {
             "node": {"typename_marker": "some_non_listing_unit"}
+          },
+          {
+            "node": null
           }
         ]
       }
@@ -955,6 +958,8 @@ The fixture here is **synthetic**, built from the node shape documented by the o
   }
 }
 ```
+
+The fourth edge (`"node": null`) matters: real Facebook feeds interleave filtered/removed units this way, and an earlier draft of `parse_graphql_response` below crashed on it — the fixture exists specifically to pin that down.
 
 - [ ] **Step 2: Escrever os testes que falham**
 
@@ -971,7 +976,11 @@ FIXTURE = json.loads(
 )
 
 
-def test_parses_two_listings_and_skips_the_non_listing_edge():
+def test_parses_two_listings_and_skips_malformed_edges():
+    # The fixture has 2 real listings plus 2 malformed edges: one missing
+    # "listing" entirely, and one with "node": null — a shape real
+    # Facebook feeds produce for filtered/removed units. Neither must crash
+    # the parse or affect the 2 valid listings.
     items = parse_graphql_response(FIXTURE)
     assert items is not None
     assert len(items) == 2
@@ -989,6 +998,16 @@ def test_returns_none_for_an_unrelated_graphql_response():
 def test_returns_empty_list_for_zero_results():
     empty = {"data": {"marketplace_search": {"feed_units": {"edges": []}}}}
     assert parse_graphql_response(empty) == []
+
+
+def test_skips_a_listing_with_a_non_scalar_id():
+    body = {"data": {"marketplace_search": {"feed_units": {"edges": [
+        {"node": {"listing": {"id": ["not", "a", "scalar"], "marketplace_listing_title": "x"}}},
+        {"node": {"listing": {"id": "1", "marketplace_listing_title": "y"}}},
+    ]}}}}
+    items = parse_graphql_response(body)
+    assert len(items) == 1
+    assert items[0]["external_id"] == "1"
 ```
 
 - [ ] **Step 3: Rodar e confirmar falha**
@@ -1028,17 +1047,28 @@ def parse_graphql_response(body: dict) -> list[dict[str, Any]] | None:
     for edge in edges:
         if not isinstance(edge, dict):
             continue
-        listing = edge.get("node", {}).get("listing")
-        if not isinstance(listing, dict) or "id" not in listing:
+        # edge.get("node", {}) would NOT fall back to {} here if "node" is
+        # present with value None (dict.get's default only applies when the
+        # key is absent) — and a null node is an ordinary shape for a
+        # filtered/removed unit in a real feed, not an edge case worth
+        # skipping protection for. Check the value explicitly instead.
+        node = edge.get("node")
+        if not isinstance(node, dict):
             continue
-        items.append({"external_id": str(listing["id"]), "raw": listing})
+        listing = node.get("listing")
+        if not isinstance(listing, dict):
+            continue
+        listing_id = listing.get("id")
+        if not isinstance(listing_id, (str, int)):
+            continue
+        items.append({"external_id": str(listing_id), "raw": listing})
     return items
 ```
 
 - [ ] **Step 5: Rodar e confirmar que passa**
 
 Run: `cd crawler && .venv/bin/pytest tests/facebook/test_capture.py -v`
-Expected: 3 testes PASS.
+Expected: 4 testes PASS.
 
 - [ ] **Step 6: Commit**
 
