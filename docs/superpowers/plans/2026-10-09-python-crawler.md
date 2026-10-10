@@ -1666,12 +1666,16 @@ design spec's §4 split between Go (business logic) and Python (browser
 work) requires.
 """
 
+import logging
+import threading
 import time
 from typing import Protocol
 
 from crawler.contracts import ResultItem, Stats, Outcome
 from crawler.errors import CrawlError, ErrorKind
 from crawler.sources.base import Adapter
+
+logger = logging.getLogger(__name__)
 
 
 class APIClientProtocol(Protocol):
@@ -1730,22 +1734,96 @@ def run_forever(
     crawler_version: str,
     parser_version: str,
     poll_interval_seconds: int,
-    stop_event=None,
+    stop_event: threading.Event | None = None,
 ) -> None:
     """Loops run_once forever (or until stop_event is set). Sleeps between
     claims only when there was nothing to do, so a busy queue gets drained
-    without an artificial delay between jobs.
+    without an artificial delay between jobs. The sleep is interruptible
+    (stop_event.wait, not time.sleep), so shutdown isn't delayed by a full
+    poll interval.
+
+    A run_once failure (e.g. the API call that reports a crawl failure
+    itself fails) is caught and logged here rather than left to crash the
+    whole process — the same reasoning as the Go backend's per-tick
+    recover() in main.go: one bad iteration shouldn't end the worker.
     """
-    while stop_event is None or not stop_event.is_set():
-        claimed = run_once(api, adapters, sources, types, crawler_version, parser_version)
+    stop_event = stop_event or threading.Event()
+    while not stop_event.is_set():
+        try:
+            claimed = run_once(api, adapters, sources, types, crawler_version, parser_version)
+        except Exception:
+            logger.exception("run_once failed; will retry next poll")
+            claimed = False
         if not claimed:
-            time.sleep(poll_interval_seconds)
+            stop_event.wait(poll_interval_seconds)
 ```
 
 - [ ] **Step 4: Rodar e confirmar que passa**
 
 Run: `cd crawler && .venv/bin/pytest tests/test_worker.py -v`
-Expected: 5 testes PASS.
+Expected: 5 testes PASS para `run_once`. Depois, adicione os testes de `run_forever` abaixo e confirme 8 no total.
+
+```python
+import threading
+
+from crawler.worker import run_forever
+
+
+def test_run_forever_stops_immediately_if_stop_event_already_set():
+    event = threading.Event()
+    event.set()
+    api = FakeAPI(claim_result=None)
+    run_forever(api, {"facebook_marketplace": FakeAdapter()}, sources=["facebook_marketplace"],
+                types=["search"], crawler_version="0.1.0", parser_version="fb-1",
+                poll_interval_seconds=0, stop_event=event)
+    # No assertion needed beyond "this returns at all" — a failure here means
+    # an infinite loop, which would hang the test suite instead of failing cleanly.
+
+
+def test_run_forever_stops_after_n_claims():
+    job = make_job()
+    adapter = FakeAdapter(items=[])
+    event = threading.Event()
+    call_count = {"n": 0}
+
+    class CountingAPI(FakeAPI):
+        def claim(self, sources, types):
+            call_count["n"] += 1
+            if call_count["n"] >= 3:
+                event.set()
+            return job
+
+    api = CountingAPI(claim_result=job)
+    run_forever(api, {"facebook_marketplace": adapter}, sources=["facebook_marketplace"],
+                types=["search"], crawler_version="0.1.0", parser_version="fb-1",
+                poll_interval_seconds=0, stop_event=event)
+    assert call_count["n"] == 3
+    assert len(api.results) == 3
+
+
+def test_run_forever_survives_a_run_once_exception_and_keeps_polling():
+    event = threading.Event()
+    call_count = {"n": 0}
+
+    class FlakyAPI(FakeAPI):
+        def claim(self, sources, types):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("transient network blip reporting a result")
+            if call_count["n"] >= 2:
+                event.set()
+            return None
+
+    api = FlakyAPI()
+    # Should not raise despite the first claim() call blowing up.
+    run_forever(api, {"facebook_marketplace": FakeAdapter()}, sources=["facebook_marketplace"],
+                types=["search"], crawler_version="0.1.0", parser_version="fb-1",
+                poll_interval_seconds=0, stop_event=event)
+    assert call_count["n"] == 2
+```
+
+Run: `cd crawler && .venv/bin/pytest tests/test_worker.py -v`
+Expected: 8 testes PASS. Each new test uses `poll_interval_seconds=0` so `stop_event.wait(0)` returns immediately instead of actually sleeping.
 
 - [ ] **Step 5: Commit**
 
