@@ -2200,6 +2200,8 @@ Use this sanitized node to replace:
 - `crawler/testdata/graphql_search_response.json` (this plan's Task 6) — wrap it in the same `edges`/envelope structure the existing fixture uses.
 - `crawler/testdata/embedded_page.html` (this plan's Task 7) — re-embed it in the same `<script type="application/json">` wrapper structure.
 
+While you have the real page open: check whether it embeds more than one `marketplace_search`-shaped JSON blob (e.g. a "related searches" or "you might also like" widget using the same field name as the real results). `fallback.py`'s `parse_embedded_json` (Task 7) assumes the first non-empty match it finds across all `<script>` tags is the real one — this was never verified against a real page. If you find more than one, note which `<script>` tag actually held the real search results and fix the tie-break in `fallback.py` accordingly (e.g. prefer the one wrapped in `RelayPrefetchedStreamCache`/`__bbox`, if that's consistently the real one) before moving on.
+
 - [ ] **Step 5: Rodar as suítes automatizadas de novo com os fixtures reais**
 
 ```bash
