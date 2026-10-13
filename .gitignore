@@ -1,0 +1,12 @@
+.env
+*.local
+/backend/bin/
+/crawler/.venv/
+.pytest_cache/
+*.egg-info/
+/crawler/profile/
+/debug/
+__pycache__/
+node_modules/
+.next/
+.superpowers/

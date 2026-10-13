@@ -1,0 +1,55 @@
+{
+  "id": "29168236012774043",
+  "is_live": true,
+  "is_sold": false,
+  "location": {
+    "reverse_geocode": {
+      "city": "Itaquaquecetuba",
+      "state": "SP",
+      "city_page": {
+        "id": "109375992422632",
+        "display_name": "Itaquaquecetuba"
+      }
+    }
+  },
+  "is_hidden": false,
+  "__typename": "GroupCommerceProductItem",
+  "is_pending": false,
+  "custom_title": "2000 Honda Civic",
+  "origin_group": null,
+  "creation_time": 1791846808,
+  "listing_price": {
+    "amount": "26000.00",
+    "formatted_amount": "R$26.000",
+    "amount_with_offset_in_currency": "519207"
+  },
+  "listing_video": null,
+  "delivery_types": ["IN_PERSON"],
+  "parent_listing": null,
+  "is_viewer_seller": false,
+  "max_listing_price": null,
+  "min_listing_price": null,
+  "strikethrough_price": null,
+  "primary_listing_photo": {
+    "id": "39464237193189504",
+    "image": {
+      "uri": "https://scontent.fldb4-1.fna.fbcdn.net/v/t39.30808-6/844758367_39464237253189498_5661884209892998893_n.jpg?stp=c0.168.1538.1538a_dst-jpg_tt6&cstp=mx1538x1538&ctp=s261x260&_nc_cat=109&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=454cf4&_nc_ohc=91kosjFAZLcQ7kNvwGTRLiU&_nc_oc=AdqLJFubLUajDH40DZTFO5QVY23Mu4fOAlWsBT3vvIQN5LKzOW_uGqqUibgcEwC428A&_nc_zt=23&_nc_ht=scontent.fldb4-1.fna&_nc_gid=nsvFZ0CAEQdvNJGbkk3Now&_nc_ss=7f22e&oh=00_AQNb23TbWWHufpFMEmliVy6pVLVqdt8oljy_dRIrap19yQ&oe=6AD411A0"
+    },
+    "__typename": "Photo"
+  },
+  "created_with_seller_app": false,
+  "marketplace_listing_title": "2000 Honda Civic",
+  "marketplace_listing_seller": {
+    "id": "100000901394133",
+    "name": "Wagner Moreira",
+    "__typename": "User"
+  },
+  "marketplace_listing_category_id": "807311116002614",
+  "__isMarketplaceListingRenderable": "GroupCommerceProductItem",
+  "custom_sub_titles_with_rendering_flags": [
+    {"subtitle": "254 mil km"}
+  ],
+  "__isMarketplaceListingWithChildListings": "GroupCommerceProductItem",
+  "__isMarketplaceListingWithDeliveryOptions": "GroupCommerceProductItem",
+  "__isMarketplaceListingWithPulseAttribution": "GroupCommerceProductItem"
+}

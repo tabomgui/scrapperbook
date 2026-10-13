@@ -1,0 +1,18 @@
+{
+  "worker_id": "smoke",
+  "attempt": 1,
+  "crawler_version": "smoke",
+  "parser_version": "smoke",
+  "items": [
+    {
+      "external_id": "1029384756",
+      "raw": {
+        "id": "1029384756",
+        "marketplace_listing_title": "Honda Civic EG 1993 hatch",
+        "listing_price": {"amount": "23500.00"},
+        "location": {"reverse_geocode": {"city": "Curitiba", "state": "PR"}}
+      }
+    }
+  ],
+  "stats": {"pages": 1, "duration_ms": 1000}
+}

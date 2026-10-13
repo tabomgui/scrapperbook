@@ -1,0 +1,71 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: monitor
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: monitor
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monitor -d monitor"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+      QUIET_HOURS: ${QUIET_HOURS:-23-7}
+      FB_MAX_JOBS_PER_HOUR: ${FB_MAX_JOBS_PER_HOUR:-6}
+      FB_MIN_GAP: ${FB_MIN_GAP:-4m}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      LISTING_UNSEEN_AFTER: ${LISTING_UNSEEN_AFTER:-168h}
+      RAW_CAPTURES_RETENTION: ${RAW_CAPTURES_RETENTION:-336h}
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  crawler:
+    build: ./crawler
+    environment:
+      API_BASE_URL: http://api:8080
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+      WORKER_MODE: ${WORKER_MODE:-worker}
+      # Without this, Settings.load falls back to socket.gethostname(),
+      # which is the container's Docker-assigned ID — stable across a plain
+      # restart, but different on every `docker compose up --build`/recreate.
+      # Each recreate would then register as a brand-new `workers` row in
+      # the backend instead of reusing one (Register upserts on worker_id).
+      WORKER_ID: crawler
+    volumes:
+      - crawler_profile:/data/profile
+      - crawler_debug:/data/debug
+    ports:
+      - "127.0.0.1:6080:6080"
+    shm_size: "1gb"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  dashboard:
+    build: ./frontend
+    environment:
+      API_BASE_URL: http://api:8080
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  crawler_profile:
+  crawler_debug:

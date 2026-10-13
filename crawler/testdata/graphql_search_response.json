@@ -1,0 +1,46 @@
+{
+  "data": {
+    "marketplace_search": {
+      "feed_units": {
+        "edges": [
+          {
+            "node": {
+              "listing": {
+                "id": "29168236012774043",
+                "marketplace_listing_title": "2000 Honda Civic",
+                "listing_price": {"amount": "26000.00", "formatted_amount": "R$26.000"},
+                "primary_listing_photo": {"image": {"uri": "https://scontent.fldb4-1.fna.fbcdn.net/v/t39.30808-6/844758367_39464237253189498_5661884209892998893_n.jpg?stp=c0.168.1538.1538a_dst-jpg_tt6&cstp=mx1538x1538&ctp=s261x260&_nc_cat=109&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=454cf4&_nc_ohc=91kosjFAZLcQ7kNvwGTRLiU&_nc_oc=AdqLJFubLUajDH40DZTFO5QVY23Mu4fOAlWsBT3vvIQN5LKzOW_uGqqUibgcEwC428A&_nc_zt=23&_nc_ht=scontent.fldb4-1.fna&_nc_gid=nsvFZ0CAEQdvNJGbkk3Now&_nc_ss=7f22e&oh=00_AQNb23TbWWHufpFMEmliVy6pVLVqdt8oljy_dRIrap19yQ&oe=6AD411A0"}},
+                "location": {"reverse_geocode": {"city": "Itaquaquecetuba", "state": "SP"}},
+                "marketplace_listing_seller": {"id": "100000901394133", "name": "Wagner Moreira"},
+                "is_sold": false,
+                "is_pending": false
+              }
+            },
+            "cursor": "abc123"
+          },
+          {
+            "node": {
+              "listing": {
+                "id": "2270441420418044",
+                "marketplace_listing_title": "2011 Honda Civic",
+                "listing_price": {"amount": "3000.00", "formatted_amount": "R$3.000"},
+                "primary_listing_photo": {"image": {"uri": "https://scontent.fldb4-1.fna.fbcdn.net/v/t39.84726-6/842915568_1641547484136642_4942153266388777441_n.jpg?stp=c0.0.260.260a_dst-jpg_p261x260_tt6&_nc_cat=106&_nc_map=urlgen_bucketless&ccb=1-7&_nc_sid=92e707&_nc_ohc=0Pes6rupaEsQ7kNvwF6aUbf&_nc_oc=AdoDreZ1hXBuxxV9p8YCWGbLo_VExxwkeX1GAhE6jPR2_azyKS1lwuH54kyTlOb8Nnw&_nc_zt=14&_nc_ht=scontent.fldb4-1.fna&_nc_gid=nsvFZ0CAEQdvNJGbkk3Now&_nc_ss=7f22e&oh=00_AQNxEjQPSXpqZp_zGH_gS0R3byaCPkXKGaWOfWSkGGKYJQ&oe=6AD3EDB1"}},
+                "location": {"reverse_geocode": {"city": "São Paulo", "state": "SP"}},
+                "marketplace_listing_seller": {"id": "61584545571806", "name": "Samira Freitas"},
+                "is_sold": false,
+                "is_pending": false
+              }
+            },
+            "cursor": "def456"
+          },
+          {
+            "node": {"typename_marker": "some_non_listing_unit"}
+          },
+          {
+            "node": null
+          }
+        ]
+      }
+    }
+  }
+}

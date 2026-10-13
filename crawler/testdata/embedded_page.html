@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head><title>Marketplace</title></head>
+<body>
+<div id="app"></div>
+<script type="text/javascript">window.__unrelated = {"foo": "bar"};</script>
+<script type="application/json" data-sjs>
+{"require": [["some", "unrelated", "blob", {"count": 3}]]}
+</script>
+<script type="application/json" data-sjs>
+{
+  "require": [[
+    "RelayPrefetchedStreamCache", "push", [{
+      "__bbox": {
+        "result": {
+          "data": {
+            "marketplace_search": {
+              "feed_units": {
+                "edges": [
+                  {"node": {"listing": {
+                    "id": "29168236012774043",
+                    "marketplace_listing_title": "2000 Honda Civic",
+                    "listing_price": {"amount": "26000.00"},
+                    "location": {"reverse_geocode": {"city": "Itaquaquecetuba", "state": "SP"}},
+                    "marketplace_listing_seller": {"id": "100000901394133", "name": "Wagner Moreira"},
+                    "is_sold": false, "is_pending": false
+                  }}}
+                ]
+              }
+            }
+          }
+        }
+      }
+    }]
+  ]]
+}
+</script>
+</body>
+</html>
