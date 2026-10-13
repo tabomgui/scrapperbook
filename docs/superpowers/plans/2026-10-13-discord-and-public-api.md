@@ -46,11 +46,12 @@ backend/internal/
 │   ├── searches.go                 SearchDefinition CRUD (+ region linking)
 │   └── listings.go                 Listings read (List w/ filters, Get+snapshots)
 ├── config/config.go                 (modified) + DiscordWebhookURL, ListingUnseenAfter, RawCapturesRetention
+├── ingest/ingest.go                 (modified) metrics counters on insert/skip/invalid
 ├── jobs/
 │   ├── query.go                     (new) Queue.ListJobs, Queue.ListSessions
 │   └── lifecycle.go                 (modified) metrics counters on Complete/Fail
 ├── workers/
-│   └── workers.go                   (modified) Registry.List
+│   └── list.go                      (new) Worker struct, Registry.List
 └── httpapi/
     ├── public.go                    Public struct, Routes(mux) — wires everything below
     ├── searches.go                  /api/v1/searches handlers
@@ -3353,3 +3354,346 @@ git commit -m "feat(backend): add public /api/v1 and /metrics endpoints"
 ```
 
 ---
+
+### Task 13: Wire notifications, sweeps and the public API into `main.go`
+
+No new behavior to unit test here — this task wires already-tested packages (Tasks 2-12) into the process entrypoint. Verified by Task 15's Docker smoke test, not by a Go test file.
+
+**Files:**
+- Modify: `backend/cmd/server/main.go`
+- Modify: `compose.yaml`
+- Modify: `.env.example`
+
+- [ ] **Step 1: Atualizar imports**
+
+In `backend/cmd/server/main.go`, replace:
+
+```go
+	"scrapperbook/backend/internal/config"
+	"scrapperbook/backend/internal/db"
+	"scrapperbook/backend/internal/httpapi"
+	"scrapperbook/backend/internal/ingest"
+	"scrapperbook/backend/internal/jobs"
+	"scrapperbook/backend/internal/scheduler"
+	"scrapperbook/backend/internal/source/facebook"
+	"scrapperbook/backend/internal/workers"
+)
+```
+
+With:
+
+```go
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"scrapperbook/backend/internal/config"
+	"scrapperbook/backend/internal/db"
+	"scrapperbook/backend/internal/httpapi"
+	"scrapperbook/backend/internal/ingest"
+	"scrapperbook/backend/internal/jobs"
+	"scrapperbook/backend/internal/notify"
+	"scrapperbook/backend/internal/scheduler"
+	"scrapperbook/backend/internal/source/facebook"
+	"scrapperbook/backend/internal/sweep"
+	"scrapperbook/backend/internal/workers"
+)
+```
+
+- [ ] **Step 2: Montar o notifier, o Public handler e registrar as novas rotas**
+
+Replace:
+
+```go
+	queue := jobs.New(pool, cfg.Limits)
+	sched := scheduler.New(pool, queue, []string{facebook.Source}, log)
+	internal := &httpapi.Internal{
+		Token:   cfg.WorkerToken,
+		Pool:    pool,
+		Queue:   queue,
+		Workers: workers.New(pool),
+		Ingest:  ingest.New(ingest.NewRegistry(facebook.Normalizer{}), log),
+		Log:     log,
+	}
+	mux := http.NewServeMux()
+	internal.Routes(mux)
+	httpapi.Health(mux, pool)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		background(ctx, log, sched, queue)
+	}()
+	// Wait for background to actually exit before pool.Close() (deferred
+	// above) runs: without this, a ticker firing right as ctx is canceled
+	// could still be mid-query against pool when Close() is called.
+	defer wg.Wait()
+```
+
+With:
+
+```go
+	queue := jobs.New(pool, cfg.Limits)
+	sched := scheduler.New(pool, queue, []string{facebook.Source}, log)
+	internal := &httpapi.Internal{
+		Token:   cfg.WorkerToken,
+		Pool:    pool,
+		Queue:   queue,
+		Workers: workers.New(pool),
+		Ingest:  ingest.New(ingest.NewRegistry(facebook.Normalizer{}), log),
+		Log:     log,
+	}
+	public := &httpapi.Public{Pool: pool, Queue: queue, Workers: workers.New(pool), Log: log}
+
+	// A nil drainer disables the Discord drain step in background() below —
+	// there's nothing to send to without a webhook URL, and that's a valid,
+	// expected single-user setup (not an error).
+	var drainer *notify.Drainer
+	if cfg.DiscordWebhookURL != "" {
+		drainer = notify.NewDrainer(pool, notify.NewDiscordNotifier(cfg.DiscordWebhookURL), log)
+	} else {
+		log.Info("discord notifications disabled: DISCORD_WEBHOOK_URL not set")
+	}
+
+	mux := http.NewServeMux()
+	internal.Routes(mux)
+	public.Routes(mux)
+	httpapi.Metrics(mux)
+	httpapi.Health(mux, pool)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		background(ctx, log, sched, queue, drainer, pool, cfg)
+	}()
+	go func() {
+		defer wg.Done()
+		backgroundRetention(ctx, log, pool, cfg)
+	}()
+	// Wait for both background loops to actually exit before pool.Close()
+	// (deferred above) runs: without this, a ticker firing right as ctx is
+	// canceled could still be mid-query against pool when Close() is called.
+	defer wg.Wait()
+```
+
+- [ ] **Step 3: Estender `background`/`runTickSafely` e adicionar o loop de retenção**
+
+Replace:
+
+```go
+// background runs the scheduler tick and lease reaper once a minute. A
+// panic in either is recovered per-iteration so one bad tick can't crash
+// the whole process (and take the HTTP server down with it) — it logs and
+// the loop just tries again next minute.
+func background(ctx context.Context, log *slog.Logger, sched *scheduler.Scheduler, queue *jobs.Queue) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		runTickSafely(ctx, log, sched, queue)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func runTickSafely(ctx context.Context, log *slog.Logger, sched *scheduler.Scheduler, queue *jobs.Queue) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("background tick panicked", "panic", r)
+		}
+	}()
+	if n, err := sched.Tick(ctx); err != nil {
+		log.Error("scheduler tick", "err", err)
+	} else if n > 0 {
+		log.Info("jobs enqueued", "count", n)
+	}
+	if n, err := queue.ReapExpiredLeases(ctx); err != nil {
+		log.Error("reap leases", "err", err)
+	} else if n > 0 {
+		log.Warn("leases expired", "count", n)
+	}
+}
+```
+
+With:
+
+```go
+// background runs the scheduler tick, lease reaper, Discord drain and
+// unseen sweep once a minute. A panic in any one step is recovered
+// per-iteration so one bad tick can't crash the whole process (and take
+// the HTTP server down with it) — it logs and the loop just tries again
+// next minute.
+func background(
+	ctx context.Context, log *slog.Logger, sched *scheduler.Scheduler, queue *jobs.Queue,
+	drainer *notify.Drainer, pool *pgxpool.Pool, cfg config.Config,
+) {
+	t := time.NewTicker(time.Minute)
+	defer t.Stop()
+	for {
+		runTickSafely(ctx, log, sched, queue, drainer, pool, cfg)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func runTickSafely(
+	ctx context.Context, log *slog.Logger, sched *scheduler.Scheduler, queue *jobs.Queue,
+	drainer *notify.Drainer, pool *pgxpool.Pool, cfg config.Config,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("background tick panicked", "panic", r)
+		}
+	}()
+	if n, err := sched.Tick(ctx); err != nil {
+		log.Error("scheduler tick", "err", err)
+	} else if n > 0 {
+		log.Info("jobs enqueued", "count", n)
+	}
+	if n, err := queue.ReapExpiredLeases(ctx); err != nil {
+		log.Error("reap leases", "err", err)
+	} else if n > 0 {
+		log.Warn("leases expired", "count", n)
+	}
+	if drainer != nil {
+		if n, err := drainer.DrainPending(ctx); err != nil {
+			log.Error("drain notifications", "err", err)
+		} else if n > 0 {
+			log.Info("notifications sent", "count", n)
+		}
+	}
+	if n, err := sweep.MarkUnseen(ctx, pool, time.Now(), cfg.ListingUnseenAfter); err != nil {
+		log.Error("mark unseen", "err", err)
+	} else if n > 0 {
+		log.Info("listings marked unseen", "count", n)
+	}
+}
+
+// backgroundRetention purges old raw_captures rows once an hour — a
+// DELETE that can touch a lot of rows, so it runs far less often than the
+// per-minute loop above.
+func backgroundRetention(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		runRetentionSafely(ctx, log, pool, cfg)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func runRetentionSafely(ctx context.Context, log *slog.Logger, pool *pgxpool.Pool, cfg config.Config) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("retention tick panicked", "panic", r)
+		}
+	}()
+	if n, err := sweep.PurgeOldRawCaptures(ctx, pool, time.Now(), cfg.RawCapturesRetention); err != nil {
+		log.Error("purge raw captures", "err", err)
+	} else if n > 0 {
+		log.Info("raw captures purged", "count", n)
+	}
+}
+```
+
+- [ ] **Step 4: Atualizar `compose.yaml`**
+
+In the `api` service's `environment:` block, add two new vars (`DISCORD_WEBHOOK_URL` was already added to `.env.example` in plan 1 but never read into `compose.yaml`'s `api` environment — add it here too):
+
+```yaml
+    environment:
+      DATABASE_URL: postgres://monitor:${POSTGRES_PASSWORD}@postgres:5432/monitor?sslmode=disable
+      WORKER_TOKEN: ${WORKER_TOKEN:?set WORKER_TOKEN in .env}
+      QUIET_HOURS: ${QUIET_HOURS:-23-7}
+      FB_MAX_JOBS_PER_HOUR: ${FB_MAX_JOBS_PER_HOUR:-6}
+      FB_MIN_GAP: ${FB_MIN_GAP:-4m}
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL:-}
+      LISTING_UNSEEN_AFTER: ${LISTING_UNSEEN_AFTER:-168h}
+      RAW_CAPTURES_RETENTION: ${RAW_CAPTURES_RETENTION:-336h}
+```
+
+- [ ] **Step 5: Atualizar `.env.example`**
+
+Add below the existing `DISCORD_WEBHOOK_URL=` line:
+
+```
+# Formato aceito pelo Go time.ParseDuration (ex.: 168h). Default já é esse.
+LISTING_UNSEEN_AFTER=168h
+RAW_CAPTURES_RETENTION=336h
+```
+
+- [ ] **Step 6: Confirmar que compila**
+
+Run: `cd backend && go build ./...`
+Expected: sem erros.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add backend/cmd/server/main.go compose.yaml .env.example
+git commit -m "feat(backend): wire discord drain, sweeps and public API into server entrypoint"
+```
+
+---
+
+### Task 14 (HUMAN ONLY — do not dispatch to a subagent): confirmar notificação real no Discord
+
+Same reasoning as plan 2's human-only login task: this posts to an external, user-owned Discord webhook. No subagent, automated or otherwise, should hold or exercise that credential.
+
+**What the human does:**
+
+1. Create a Discord webhook in any channel you control (Server Settings → Integrations → Webhooks → New Webhook → Copy URL).
+2. Set `DISCORD_WEBHOOK_URL` in `.env` to that URL.
+3. `docker compose up -d --build api` to pick up the new env var and the Task 13 code.
+4. Trigger a real notification — easiest path is a price-drop: pick a `listings` row currently `active` and run a manual `UPDATE listings SET price_cents = price_cents - 100 WHERE id = ...;` then manually insert a matching row into `notifications` (kind `price_drop`, referencing that listing), **or** just wait for the next real crawl tick to produce a new listing naturally (`kind = 'new'`).
+5. Within a minute, confirm a message actually arrives in the Discord channel with the expected title/price/city.
+6. Report back: did the message arrive, did the embed look right (title, price, city/state, thumbnail)?
+
+This task is marked done only once the human confirms a real message was seen in their own Discord channel.
+
+---
+
+### Task 15: Verificação final
+
+- [ ] **Step 1: Suíte completa**
+
+Run: `cd backend && go test ./...`
+Expected: all packages PASS, including the new `metrics`, `notify`, `sweep`, `catalog`, `workers`, `jobs` and `httpapi` tests added by this plan.
+
+- [ ] **Step 2: Smoke test contra a stack rodando**
+
+With `docker compose up -d` already running (postgres + api + crawler from plans 1-2):
+
+```bash
+curl -s http://localhost:8080/api/v1/regions | jq .
+curl -s http://localhost:8080/api/v1/searches | jq .
+curl -s http://localhost:8080/api/v1/listings?limit=5 | jq .
+curl -s http://localhost:8080/api/v1/jobs?limit=5 | jq .
+curl -s http://localhost:8080/api/v1/workers | jq .
+curl -s http://localhost:8080/api/v1/sessions | jq .
+curl -s http://localhost:8080/api/v1/stats | jq .
+curl -s http://localhost:8080/metrics | grep jobs_total
+```
+
+Expected: all return `200` with real data reflecting the live Honda Civic EG/Curitiba search seeded in plan 2 — nonzero `total_listings` in `/stats`, nonzero `jobs_total` series in `/metrics`.
+
+- [ ] **Step 3: Checklist de critérios de pronto (contra o spec, seção 11)**
+
+- [ ] Notificações no Discord funcionam de ponta a ponta (Task 14 confirmado pelo humano).
+- [ ] `/api/v1/searches` e `/api/v1/regions` permitem CRUD completo sem precisar editar o banco na mão.
+- [ ] `/api/v1/listings` permite filtrar por estado/cidade/preço/status.
+- [ ] `/api/v1/jobs`, `/workers`, `/sessions` dão visibilidade operacional sem acessar o Postgres direto.
+- [ ] `/api/v1/sessions/{source}/resume` desbloqueia uma fonte pausada por `checkpoint`/`login_required` sem reiniciar o container.
+- [ ] `/metrics` expõe contadores que um Prometheus/Grafana local poderia raspar.
+- [ ] Listagens que somem do Marketplace são marcadas `unseen` depois de `LISTING_UNSEEN_AFTER` sem intervenção manual.
+- [ ] `raw_captures` antigas são purgadas automaticamente depois de `RAW_CAPTURES_RETENTION`.
+
+Com isso, o roadmap definido nos planos 1 e 2 (alertas + API pública) está completo. O próximo item do roadmap — dashboard Next.js — fica para o plano 4, fora do escopo deste.
