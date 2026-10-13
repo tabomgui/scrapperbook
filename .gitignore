@@ -10,3 +10,4 @@ __pycache__/
 node_modules/
 .next/
 .superpowers/
+frontend/tsconfig.tsbuildinfo
