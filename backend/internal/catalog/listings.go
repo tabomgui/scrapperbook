@@ -38,15 +38,18 @@ type Snapshot struct {
 }
 
 type ListingFilter struct {
-	SearchID *string
-	State    *string
-	City     *string
-	MinPrice *int64
-	MaxPrice *int64
-	Status   *string
-	Hidden   *bool  // nil means no filter (both shown)
-	Sort     string // "first_seen_at"|"last_seen_at"|"price_cents", "-" prefix for descending
-	Limit    int    // 0 or >200 falls back to 50
+	SearchID        *string
+	State           *string
+	City            *string
+	MinPrice        *int64
+	MaxPrice        *int64
+	Status          *string
+	Hidden          *bool // nil means no filter (both shown)
+	FirstSeenAfter  *time.Time
+	FirstSeenBefore *time.Time // exclusive upper bound: pass the day *after* the last day you want included
+	Sort            string     // "first_seen_at"|"last_seen_at"|"price_cents", "-" prefix for descending
+	Limit           int        // 0 or >200 falls back to 50
+	Offset          int
 }
 
 var validSortColumns = map[string]string{
@@ -72,11 +75,11 @@ func sortClause(sort string) string {
 	return sqlCol + " ASC"
 }
 
-func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]Listing, error) {
-	query := `SELECT l.id, l.source, l.external_id, l.url, l.title, l.description, l.price_cents,
-	                  l.currency, l.city, l.state, l.image_url, l.seller_name, l.status, l.hidden,
-	                  l.first_seen_at, l.last_seen_at
-	           FROM listings l`
+// ListListings returns the page of listings matching f, plus the total
+// number of rows matching f's filters (ignoring Limit/Offset) — the total
+// is what the dashboard needs to render page numbers.
+func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]Listing, int, error) {
+	from := `FROM listings l`
 	var where []string
 	var args []any
 	arg := func(v any) string {
@@ -84,7 +87,7 @@ func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]L
 		return fmt.Sprintf("$%d", len(args))
 	}
 	if f.SearchID != nil {
-		query += ` JOIN search_listings sl ON sl.listing_id = l.id`
+		from += ` JOIN search_listings sl ON sl.listing_id = l.id`
 		where = append(where, "sl.search_id = "+arg(*f.SearchID))
 	}
 	if f.State != nil {
@@ -105,19 +108,35 @@ func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]L
 	if f.Hidden != nil {
 		where = append(where, "l.hidden = "+arg(*f.Hidden))
 	}
-	if len(where) > 0 {
-		query += " WHERE " + strings.Join(where, " AND ")
+	if f.FirstSeenAfter != nil {
+		where = append(where, "l.first_seen_at >= "+arg(*f.FirstSeenAfter))
 	}
+	if f.FirstSeenBefore != nil {
+		where = append(where, "l.first_seen_at < "+arg(*f.FirstSeenBefore))
+	}
+	whereClause := ""
+	if len(where) > 0 {
+		whereClause = " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var total int
+	if err := pool.QueryRow(ctx, "SELECT count(*) "+from+whereClause, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count listings: %w", err)
+	}
+
+	query := `SELECT l.id, l.source, l.external_id, l.url, l.title, l.description, l.price_cents,
+	                  l.currency, l.city, l.state, l.image_url, l.seller_name, l.status, l.hidden,
+	                  l.first_seen_at, l.last_seen_at ` + from + whereClause
 	query += " ORDER BY " + sortClause(f.Sort)
 	limit := f.Limit
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
-	query += fmt.Sprintf(" LIMIT %d", limit)
+	query += fmt.Sprintf(" LIMIT %d OFFSET %d", limit, f.Offset)
 
 	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list listings: %w", err)
+		return nil, 0, fmt.Errorf("list listings: %w", err)
 	}
 	defer rows.Close()
 	var out []Listing
@@ -126,11 +145,14 @@ func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]L
 		if err := rows.Scan(&l.ID, &l.Source, &l.ExternalID, &l.URL, &l.Title, &l.Description, &l.PriceCents,
 			&l.Currency, &l.City, &l.State, &l.ImageURL, &l.SellerName, &l.Status, &l.Hidden,
 			&l.FirstSeenAt, &l.LastSeenAt); err != nil {
-			return nil, fmt.Errorf("scan listing: %w", err)
+			return nil, 0, fmt.Errorf("scan listing: %w", err)
 		}
 		out = append(out, l)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return out, total, nil
 }
 
 func GetListing(ctx context.Context, pool *pgxpool.Pool, id int64) (Listing, []Snapshot, error) {

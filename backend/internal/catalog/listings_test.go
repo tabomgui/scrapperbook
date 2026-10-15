@@ -35,7 +35,7 @@ func TestListListingsFiltersByStateAndPrice(t *testing.T) {
 
 	pr := "PR"
 	max := int64(3000000)
-	got, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{State: &pr, MaxPrice: &max})
+	got, _, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{State: &pr, MaxPrice: &max})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestListListingsSortsNewestFirstByDefault(t *testing.T) {
 	insertTestListing(t, pool, "older", "Curitiba", "PR", 1000000, now.Add(-time.Hour))
 	insertTestListing(t, pool, "newer", "Curitiba", "PR", 1000000, now)
 
-	got, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{})
+	got, _, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestListListingsRejectsUnknownSortColumnSafely(t *testing.T) {
 
 	// An unrecognized sort value must not error or inject SQL — it silently
 	// falls back to the default order.
-	got, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Sort: "'; DROP TABLE listings; --"})
+	got, _, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Sort: "'; DROP TABLE listings; --"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestListListingsFiltersByHidden(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	all, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{})
+	all, _, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestListListingsFiltersByHidden(t *testing.T) {
 		t.Fatalf("no filter: got %d, want 2 (both)", len(all))
 	}
 
-	onlyVisible, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Hidden: boolPtr(false)})
+	onlyVisible, _, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Hidden: boolPtr(false)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,11 +163,86 @@ func TestListListingsFiltersByHidden(t *testing.T) {
 		t.Fatalf("hidden=false: got %+v, want only %d", onlyVisible, visible)
 	}
 
-	onlyHidden, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Hidden: boolPtr(true)})
+	onlyHidden, _, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Hidden: boolPtr(true)})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(onlyHidden) != 1 || onlyHidden[0].ID != hidden {
 		t.Fatalf("hidden=true: got %+v, want only %d", onlyHidden, hidden)
+	}
+}
+
+func TestListListingsFiltersByFirstSeenDateRange(t *testing.T) {
+	pool := testdb.New(t)
+	base := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	insertTestListing(t, pool, "too-early", "Curitiba", "PR", 1000000, base.AddDate(0, 0, -1))
+	insertTestListing(t, pool, "in-range-1", "Curitiba", "PR", 1000000, base)
+	insertTestListing(t, pool, "in-range-2", "Curitiba", "PR", 1000000, base.AddDate(0, 0, 2))
+	insertTestListing(t, pool, "too-late", "Curitiba", "PR", 1000000, base.AddDate(0, 0, 10))
+
+	after := base
+	before := base.AddDate(0, 0, 3) // exclusive upper bound: "in-range-2" day is included, "too-late" is not
+	got, total, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{
+		FirstSeenAfter: &after, FirstSeenBefore: &before,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2", total)
+	}
+	got2 := []string{got[0].ExternalID, got[1].ExternalID}
+	if len(got) != 2 || got2[0] != "in-range-2" || got2[1] != "in-range-1" {
+		t.Fatalf("got = %+v, want [in-range-2, in-range-1] (newest first)", got)
+	}
+}
+
+func TestListListingsOffsetPaginates(t *testing.T) {
+	pool := testdb.New(t)
+	now := time.Now().UTC()
+	insertTestListing(t, pool, "a", "Curitiba", "PR", 1000000, now.Add(-3*time.Hour))
+	insertTestListing(t, pool, "b", "Curitiba", "PR", 1000000, now.Add(-2*time.Hour))
+	insertTestListing(t, pool, "c", "Curitiba", "PR", 1000000, now.Add(-1*time.Hour))
+
+	page1, total, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Limit: 2, Offset: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 {
+		t.Fatalf("total = %d, want 3", total)
+	}
+	if len(page1) != 2 || page1[0].ExternalID != "c" || page1[1].ExternalID != "b" {
+		t.Fatalf("page1 = %+v", page1)
+	}
+
+	page2, total2, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total2 != 3 {
+		t.Fatalf("total2 = %d, want 3", total2)
+	}
+	if len(page2) != 1 || page2[0].ExternalID != "a" {
+		t.Fatalf("page2 = %+v", page2)
+	}
+}
+
+func TestListListingsTotalCountRespectsFiltersIgnoresLimit(t *testing.T) {
+	pool := testdb.New(t)
+	now := time.Now().UTC()
+	insertTestListing(t, pool, "1", "Curitiba", "PR", 1000000, now)
+	insertTestListing(t, pool, "2", "Curitiba", "PR", 1000000, now)
+	insertTestListing(t, pool, "3", "São Paulo", "SP", 1000000, now)
+
+	pr := "PR"
+	got, total, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{State: &pr, Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 2 {
+		t.Fatalf("total = %d, want 2 (filtered by state, ignoring limit=1)", total)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got = %+v, want exactly 1 row (limit applied to rows, not to total)", got)
 	}
 }
