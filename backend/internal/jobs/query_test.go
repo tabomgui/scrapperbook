@@ -118,6 +118,21 @@ func TestRecordResultPersistsAndListJobsReturnsIt(t *testing.T) {
 	}
 }
 
+func TestRecordResultErrorsForUnknownJobID(t *testing.T) {
+	pool := testdb.New(t)
+	q, _ := newQueue(t, pool, openLimits())
+
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if err := q.RecordResult(ctx, tx, "00000000-0000-0000-0000-000000000000", 1, 0, 0, 0, 0, 0); err == nil {
+		t.Fatal("want error for unknown job id, got nil")
+	}
+}
+
 func TestListJobsReturnsNilResultForIncompleteJob(t *testing.T) {
 	pool := testdb.New(t)
 	s := testdb.Seed(t, pool)

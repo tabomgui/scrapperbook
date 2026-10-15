@@ -101,12 +101,15 @@ func (q *Queue) Complete(ctx context.Context, tx pgx.Tx, jobID string, attempt i
 // Complete and the ingest write — a job is never left "succeeded" with no
 // way to later see what it found.
 func (q *Queue) RecordResult(ctx context.Context, tx pgx.Tx, jobID string, newCount, changedCount, seenCount, invalidCount, irrelevantCount, alertsCount int) error {
-	_, err := tx.Exec(ctx, `UPDATE jobs SET
+	tag, err := tx.Exec(ctx, `UPDATE jobs SET
 		result_new = $2, result_changed = $3, result_seen = $4,
 		result_invalid = $5, result_irrelevant = $6, result_alerts = $7
 		WHERE id = $1`, jobID, newCount, changedCount, seenCount, invalidCount, irrelevantCount, alertsCount)
 	if err != nil {
 		return fmt.Errorf("record result for job %s: %w", jobID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("record result for job %s: no such job", jobID)
 	}
 	return nil
 }
