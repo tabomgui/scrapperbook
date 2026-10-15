@@ -164,12 +164,15 @@ func TestListingsFilterByStateAndPrice(t *testing.T) {
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp2.StatusCode)
 	}
-	var list []map[string]any
-	if err := json.NewDecoder(resp2.Body).Decode(&list); err != nil {
+	var body struct {
+		Listings []map[string]any `json:"listings"`
+		Total    int              `json:"total"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0]["external_id"] != "1" {
-		t.Fatalf("list = %v", list)
+	if body.Total != 1 || len(body.Listings) != 1 || body.Listings[0]["external_id"] != "1" {
+		t.Fatalf("body = %+v", body)
 	}
 }
 
@@ -235,13 +238,16 @@ func TestListingsExcludesHiddenByDefaultAndIncludesWithHiddenAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var list []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+	var body struct {
+		Listings []map[string]any `json:"listings"`
+		Total    int              `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
-	if len(list) != 1 || list[0]["external_id"] != "1" {
-		t.Fatalf("default list = %v, want only non-hidden", list)
+	if body.Total != 1 || len(body.Listings) != 1 || body.Listings[0]["external_id"] != "1" {
+		t.Fatalf("default body = %+v, want only non-hidden", body)
 	}
 
 	resp, err = http.Get(e.srv.URL + "/api/v1/listings?hidden=all")
@@ -249,12 +255,15 @@ func TestListingsExcludesHiddenByDefaultAndIncludesWithHiddenAll(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var all []map[string]any
-	if err := json.NewDecoder(resp.Body).Decode(&all); err != nil {
+	var allBody struct {
+		Listings []map[string]any `json:"listings"`
+		Total    int              `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&allBody); err != nil {
 		t.Fatal(err)
 	}
-	if len(all) != 2 {
-		t.Fatalf("hidden=all list = %v, want both", all)
+	if allBody.Total != 2 || len(allBody.Listings) != 2 {
+		t.Fatalf("hidden=all body = %+v, want both", allBody)
 	}
 }
 
@@ -360,6 +369,65 @@ func TestRunSearchEnqueuesJobs(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("jobs in db = %d, want 1", count)
+	}
+}
+
+func TestListingsFiltersByFirstSeenDateRange(t *testing.T) {
+	e := setupPublic(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO listings
+		(source, external_id, url, title, status, fingerprint, content_hash,
+		 first_seen_at, last_seen_at, last_changed_at, raw_data)
+		VALUES ('facebook_marketplace', '1', 'https://x/1', 'Civic', 'active', 'fp1', 'ch1',
+		        '2026-10-01', '2026-10-01', '2026-10-01', '{}'),
+		       ('facebook_marketplace', '2', 'https://x/2', 'Civic', 'active', 'fp2', 'ch2',
+		        '2026-10-10', '2026-10-10', '2026-10-10', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(e.srv.URL + "/api/v1/listings?first_seen_after=2026-10-05&first_seen_before=2026-10-15")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Listings []map[string]any `json:"listings"`
+		Total    int              `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Total != 1 || len(body.Listings) != 1 || body.Listings[0]["external_id"] != "2" {
+		t.Fatalf("body = %+v, want only external_id=2", body)
+	}
+}
+
+func TestListingsOffsetAndLimitPaginate(t *testing.T) {
+	e := setupPublic(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO listings
+		(source, external_id, url, title, status, fingerprint, content_hash,
+		 first_seen_at, last_seen_at, last_changed_at, raw_data)
+		VALUES ('facebook_marketplace', '1', 'https://x/1', 'Civic', 'active', 'fp1', 'ch1', now() - interval '2 hours', now(), now(), '{}'),
+		       ('facebook_marketplace', '2', 'https://x/2', 'Civic', 'active', 'fp2', 'ch2', now() - interval '1 hour', now(), now(), '{}'),
+		       ('facebook_marketplace', '3', 'https://x/3', 'Civic', 'active', 'fp3', 'ch3', now(), now(), now(), '{}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(e.srv.URL + "/api/v1/listings?limit=2&offset=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Listings []map[string]any `json:"listings"`
+		Total    int              `json:"total"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Total != 3 || len(body.Listings) != 1 || body.Listings[0]["external_id"] != "1" {
+		t.Fatalf("body = %+v, want total=3 and the oldest row (external_id=1) as the only row past offset 2", body)
 	}
 }
 
