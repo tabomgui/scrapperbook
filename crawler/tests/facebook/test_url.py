@@ -5,8 +5,13 @@ def test_basic_search_url():
     url = build_search_url(fb_location="curitiba", keyword="Honda Civic EG", filters={})
     assert url == (
         "https://www.facebook.com/marketplace/curitiba/search"
-        "?query=Honda+Civic+EG&sortBy=creation_time_descend"
+        "?query=Honda+Civic+EG&sortBy=creation_time_descend&category_id=807311116002614"
     )
+
+
+def test_search_url_scopes_to_vehicles_category():
+    url = build_search_url(fb_location="curitiba", keyword="x", filters={})
+    assert "category_id=807311116002614" in url
 
 
 def test_search_url_includes_price_and_days_filters():

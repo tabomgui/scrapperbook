@@ -32,7 +32,7 @@ type Scheduler struct {
 func New(pool *pgxpool.Pool, queue *jobs.Queue, sources []string, log *slog.Logger) *Scheduler {
 	return &Scheduler{
 		pool: pool, queue: queue, sources: sources, log: log,
-		limits: PageLimits{MaxPages: 3, MaxItems: 120},
+		limits: PageLimits{MaxPages: 8, MaxItems: 160},
 		Clock:  time.Now,
 	}
 }

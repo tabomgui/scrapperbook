@@ -53,7 +53,7 @@ func TestTickEnqueuesOneJobPerRegionAndReschedules(t *testing.T) {
 	if region["fb_location"] != "curitiba" || search["keyword"] != "Honda Civic EG" {
 		t.Fatalf("payload = %v", payload)
 	}
-	if limits := payload["limits"].(map[string]any); limits["max_pages"] != float64(3) {
+	if limits := payload["limits"].(map[string]any); limits["max_pages"] != float64(8) {
 		t.Fatalf("limits = %v", limits)
 	}
 
