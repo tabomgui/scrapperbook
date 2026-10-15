@@ -78,6 +78,79 @@ func TestListJobsOrdersByCreatedAtDesc(t *testing.T) {
 	}
 }
 
+func TestRecordResultPersistsAndListJobsReturnsIt(t *testing.T) {
+	pool := testdb.New(t)
+	s := testdb.Seed(t, pool)
+	q, _ := newQueue(t, pool, openLimits())
+	enqueue(t, q, pool, s.SearchID, s.RegionID, 0)
+	j := claim(t, q)
+
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.Complete(ctx, tx, j.ID, j.Attempt, "w1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.RecordResult(ctx, tx, j.ID, 2, 1, 0, 0, 5, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	list, err := q.ListJobs(ctx, jobs.JobFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("list = %+v", list)
+	}
+	got := list[0]
+	if got.ResultNew == nil || *got.ResultNew != 2 ||
+		got.ResultChanged == nil || *got.ResultChanged != 1 ||
+		got.ResultSeen == nil || *got.ResultSeen != 0 ||
+		got.ResultInvalid == nil || *got.ResultInvalid != 0 ||
+		got.ResultIrrelevant == nil || *got.ResultIrrelevant != 5 ||
+		got.ResultAlerts == nil || *got.ResultAlerts != 1 {
+		t.Fatalf("result stats = %+v", got)
+	}
+}
+
+func TestListJobsReturnsNilResultForIncompleteJob(t *testing.T) {
+	pool := testdb.New(t)
+	s := testdb.Seed(t, pool)
+	q, _ := newQueue(t, pool, openLimits())
+	enqueue(t, q, pool, s.SearchID, s.RegionID, 0)
+	claim(t, q) // left running: never Completed or RecordResult'd
+
+	list, err := q.ListJobs(context.Background(), jobs.JobFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].ResultNew != nil {
+		t.Fatalf("list = %+v, want ResultNew nil for a job with no recorded result", list)
+	}
+}
+
+func TestListJobsIncludesSearchAndRegionNames(t *testing.T) {
+	pool := testdb.New(t)
+	s := testdb.Seed(t, pool)
+	q, _ := newQueue(t, pool, openLimits())
+	enqueue(t, q, pool, s.SearchID, s.RegionID, 0)
+	claim(t, q)
+
+	list, err := q.ListJobs(context.Background(), jobs.JobFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].SearchName == nil || *list[0].SearchName != "Civic EG" ||
+		list[0].RegionName == nil || *list[0].RegionName != "curitiba-pr" {
+		t.Fatalf("list = %+v, want search_name=Civic EG region_name=curitiba-pr", list)
+	}
+}
+
 func TestListSessionsReturnsSeededSource(t *testing.T) {
 	pool := testdb.New(t)
 	q, _ := newQueue(t, pool, openLimits())
