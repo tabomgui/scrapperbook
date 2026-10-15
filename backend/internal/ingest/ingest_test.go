@@ -196,3 +196,21 @@ func TestIrrelevantNewListingNeverAlerts(t *testing.T) {
 		t.Fatalf("notifications = %d, want 0", n)
 	}
 }
+
+func TestHiddenListingPriceDropDoesNotNotify(t *testing.T) {
+	e := setup(t)
+	e.run(t, seenAt, node("1", "Honda Civic EG 1993", "23500"))
+	if _, err := e.pool.Exec(context.Background(), `UPDATE listings SET hidden = true WHERE external_id = '1'`); err != nil {
+		t.Fatal(err)
+	}
+	st := e.run(t, seenAt.Add(time.Hour), node("1", "Honda Civic EG 1993", "21000"))
+	if st.Changed != 1 {
+		t.Fatalf("stats = %+v, want Changed=1", st)
+	}
+	if st.Alerts != 0 {
+		t.Fatalf("alerts = %d, want 0 (listing is hidden)", st.Alerts)
+	}
+	if n := e.count(t, `SELECT count(*) FROM notifications`); n != 0 {
+		t.Fatalf("notifications = %d, want 0", n)
+	}
+}

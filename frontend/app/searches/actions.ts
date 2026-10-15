@@ -62,6 +62,11 @@ export async function deleteSearchAction(id: string): Promise<void> {
   revalidatePath("/searches");
 }
 
+export async function runSearchAction(id: string): Promise<void> {
+  await apiFetch(`/api/v1/searches/${id}/run`, { method: "POST" });
+  revalidatePath("/searches");
+}
+
 export async function createRegionAction(formData: FormData): Promise<ActionResult> {
   const body = {
     id: String(formData.get("id") ?? ""),

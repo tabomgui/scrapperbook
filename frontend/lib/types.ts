@@ -37,6 +37,7 @@ export interface Listing {
   image_url?: string;
   seller_name?: string;
   status: string;
+  hidden: boolean;
   first_seen_at: string;
   last_seen_at: string;
 }

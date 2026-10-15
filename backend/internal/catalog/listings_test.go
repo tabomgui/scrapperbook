@@ -102,3 +102,72 @@ func TestGetListingNotFound(t *testing.T) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestSetListingHiddenTogglesFlag(t *testing.T) {
+	pool := testdb.New(t)
+	id := insertTestListing(t, pool, "1", "Curitiba", "PR", 2000000, time.Now().UTC())
+
+	if err := catalog.SetListingHidden(context.Background(), pool, id, true); err != nil {
+		t.Fatal(err)
+	}
+	l, _, err := catalog.GetListing(context.Background(), pool, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !l.Hidden {
+		t.Fatal("hidden = false, want true")
+	}
+
+	if err := catalog.SetListingHidden(context.Background(), pool, id, false); err != nil {
+		t.Fatal(err)
+	}
+	l, _, err = catalog.GetListing(context.Background(), pool, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Hidden {
+		t.Fatal("hidden = true, want false")
+	}
+}
+
+func TestSetListingHiddenNotFoundForUnknownID(t *testing.T) {
+	pool := testdb.New(t)
+	err := catalog.SetListingHidden(context.Background(), pool, 999999, true)
+	if err != catalog.ErrNotFound {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestListListingsFiltersByHidden(t *testing.T) {
+	pool := testdb.New(t)
+	now := time.Now().UTC()
+	visible := insertTestListing(t, pool, "1", "Curitiba", "PR", 2000000, now)
+	hidden := insertTestListing(t, pool, "2", "Curitiba", "PR", 2000000, now)
+	if err := catalog.SetListingHidden(context.Background(), pool, hidden, true); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("no filter: got %d, want 2 (both)", len(all))
+	}
+
+	onlyVisible, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Hidden: boolPtr(false)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onlyVisible) != 1 || onlyVisible[0].ID != visible {
+		t.Fatalf("hidden=false: got %+v, want only %d", onlyVisible, visible)
+	}
+
+	onlyHidden, err := catalog.ListListings(context.Background(), pool, catalog.ListingFilter{Hidden: boolPtr(true)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onlyHidden) != 1 || onlyHidden[0].ID != hidden {
+		t.Fatalf("hidden=true: got %+v, want only %d", onlyHidden, hidden)
+	}
+}

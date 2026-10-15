@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { apiFetch, ApiError } from "@/lib/api";
 import { formatPrice } from "@/lib/format";
 import type { Listing, Snapshot } from "@/lib/types";
+import { hideListingAction, unhideListingAction } from "../actions";
 
 export default async function ListingDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -32,14 +33,24 @@ export default async function ListingDetailPage({ params }: { params: Promise<{ 
           className="mb-4 max-h-80 rounded border border-slate-200 object-cover"
         />
       )}
-      <a
-        href={data.listing.url}
-        target="_blank"
-        rel="noreferrer"
-        className="mb-6 inline-block rounded bg-slate-900 px-3 py-1 text-sm font-medium text-white"
-      >
-        Ver no Facebook Marketplace
-      </a>
+      <div className="mb-6 flex gap-2">
+        <a
+          href={data.listing.url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-block rounded bg-slate-900 px-3 py-1 text-sm font-medium text-white"
+        >
+          Ver no Facebook Marketplace
+        </a>
+        <form action={(data.listing.hidden ? unhideListingAction : hideListingAction).bind(null, data.listing.id)}>
+          <button
+            type="submit"
+            className="rounded border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700"
+          >
+            {data.listing.hidden ? "mostrar" : "ocultar"}
+          </button>
+        </form>
+      </div>
 
       <h2 className="mb-2 text-lg font-medium">Histórico</h2>
       {snapshots.length === 0 ? (

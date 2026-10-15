@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 
 	"scrapperbook/backend/internal/httpapi"
 	"scrapperbook/backend/internal/jobs"
+	"scrapperbook/backend/internal/scheduler"
 	"scrapperbook/backend/internal/testdb"
 	"scrapperbook/backend/internal/workers"
 )
@@ -29,9 +31,10 @@ func setupPublic(t *testing.T) publicEnv {
 	t.Helper()
 	pool := testdb.New(t)
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	queue := jobs.New(pool, jobs.Limits{MaxPerHour: 100, Lease: 10 * time.Minute})
+	sched := scheduler.New(pool, queue, []string{"facebook_marketplace"}, log)
 	pub := &httpapi.Public{
-		Pool: pool, Queue: jobs.New(pool, jobs.Limits{MaxPerHour: 100, Lease: 10 * time.Minute}),
-		Workers: workers.New(pool), Log: log,
+		Pool: pool, Queue: queue, Workers: workers.New(pool), Scheduler: sched, Log: log,
 	}
 	mux := http.NewServeMux()
 	pub.Routes(mux)
@@ -170,6 +173,91 @@ func TestListingsFilterByStateAndPrice(t *testing.T) {
 	}
 }
 
+func TestHideAndUnhideListing(t *testing.T) {
+	e := setupPublic(t)
+	ctx := context.Background()
+	var id int64
+	if err := e.pool.QueryRow(ctx, `INSERT INTO listings
+		(source, external_id, url, title, status, fingerprint, content_hash,
+		 first_seen_at, last_seen_at, last_changed_at, raw_data)
+		VALUES ('facebook_marketplace', '1', 'https://x/1', 'Civic', 'active', 'fp1', 'ch1',
+		        now(), now(), now(), '{}')
+		RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, _ := doJSON(t, http.MethodPost, fmt.Sprintf("%s/api/v1/listings/%d/hide", e.srv.URL, id), nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("hide status = %d", resp.StatusCode)
+	}
+	var hidden bool
+	if err := e.pool.QueryRow(ctx, `SELECT hidden FROM listings WHERE id = $1`, id).Scan(&hidden); err != nil {
+		t.Fatal(err)
+	}
+	if !hidden {
+		t.Fatal("hidden = false after /hide")
+	}
+
+	resp, _ = doJSON(t, http.MethodPost, fmt.Sprintf("%s/api/v1/listings/%d/unhide", e.srv.URL, id), nil)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("unhide status = %d", resp.StatusCode)
+	}
+	if err := e.pool.QueryRow(ctx, `SELECT hidden FROM listings WHERE id = $1`, id).Scan(&hidden); err != nil {
+		t.Fatal(err)
+	}
+	if hidden {
+		t.Fatal("hidden = true after /unhide")
+	}
+}
+
+func TestHideUnknownListingReturnsNotFound(t *testing.T) {
+	e := setupPublic(t)
+	resp, _ := doJSON(t, http.MethodPost, e.srv.URL+"/api/v1/listings/999999/hide", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+}
+
+func TestListingsExcludesHiddenByDefaultAndIncludesWithHiddenAll(t *testing.T) {
+	e := setupPublic(t)
+	ctx := context.Background()
+	if _, err := e.pool.Exec(ctx, `INSERT INTO listings
+		(source, external_id, url, title, status, hidden, fingerprint, content_hash,
+		 first_seen_at, last_seen_at, last_changed_at, raw_data)
+		VALUES ('facebook_marketplace', '1', 'https://x/1', 'Civic', 'active', false, 'fp1', 'ch1',
+		        now(), now(), now(), '{}'),
+		       ('facebook_marketplace', '2', 'https://x/2', 'Civic', 'active', true, 'fp2', 'ch2',
+		        now(), now(), now(), '{}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Get(e.srv.URL + "/api/v1/listings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(list) != 1 || list[0]["external_id"] != "1" {
+		t.Fatalf("default list = %v, want only non-hidden", list)
+	}
+
+	resp, err = http.Get(e.srv.URL + "/api/v1/listings?hidden=all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var all []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&all); err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("hidden=all list = %v, want both", all)
+	}
+}
+
 func TestOpsEndpointsAndResume(t *testing.T) {
 	e := setupPublic(t)
 	ctx := context.Background()
@@ -251,5 +339,34 @@ func TestMetricsEndpointServesPrometheusFormat(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "jobs_total") {
 		t.Fatalf("expected jobs_total metric name in output, got %d bytes", len(body))
+	}
+}
+
+func TestRunSearchEnqueuesJobs(t *testing.T) {
+	e := setupPublic(t)
+	seed := testdb.Seed(t, e.pool)
+
+	resp, body := doJSON(t, http.MethodPost, e.srv.URL+"/api/v1/searches/"+seed.SearchID+"/run", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if body["jobs_enqueued"] != float64(1) {
+		t.Fatalf("jobs_enqueued = %v", body["jobs_enqueued"])
+	}
+	var count int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM jobs WHERE search_id = $1`, seed.SearchID).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("jobs in db = %d, want 1", count)
+	}
+}
+
+func TestRunSearchUnknownIDReturnsNotFound(t *testing.T) {
+	e := setupPublic(t)
+	resp, _ := doJSON(t, http.MethodPost, e.srv.URL+"/api/v1/searches/00000000-0000-0000-0000-000000000000/run", nil)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }

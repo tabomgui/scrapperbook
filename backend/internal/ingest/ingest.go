@@ -123,7 +123,7 @@ func (s *Service) Ingest(ctx context.Context, tx pgx.Tx, b Batch) (Stats, error)
 		if !baselineDone {
 			continue
 		}
-		if newToSearch && rule.WantsNew(c) {
+		if newToSearch && !res.hidden && rule.WantsNew(c) {
 			added, err := enqueueNotification(ctx, tx, notification{
 				key:  fmt.Sprintf("new:%s:%d", b.SearchID, res.listingID),
 				kind: "new", listingID: res.listingID, searchID: b.SearchID, price: c.PriceCents,
@@ -135,7 +135,7 @@ func (s *Service) Ingest(ctx context.Context, tx pgx.Tx, b Batch) (Stats, error)
 				st.Alerts++
 			}
 		}
-		if res.oldPrice != nil && c.PriceCents != nil && rule.WantsPriceDrop(*res.oldPrice, *c.PriceCents, c) {
+		if !res.hidden && res.oldPrice != nil && c.PriceCents != nil && rule.WantsPriceDrop(*res.oldPrice, *c.PriceCents, c) {
 			added, err := enqueueNotification(ctx, tx, notification{
 				key:  fmt.Sprintf("price_drop:%s:%d:%d:%d:%s", b.SearchID, res.listingID, *res.oldPrice, *c.PriceCents, b.JobID),
 				kind: "price_drop", listingID: res.listingID, searchID: b.SearchID,
@@ -171,6 +171,7 @@ type upsertResult struct {
 	listingID int64
 	kind      upsertKind
 	oldPrice  *int64 // set only when kind == kindChanged
+	hidden    bool   // the listing's hidden flag as of the load/insert in this call
 }
 
 func upsertListing(ctx context.Context, tx pgx.Tx, c listing.Canonical, raw json.RawMessage, b Batch) (upsertResult, error) {
@@ -200,9 +201,10 @@ func upsertListing(ctx context.Context, tx pgx.Tx, c listing.Canonical, raw json
 
 	var oldHash string
 	var oldPrice *int64
-	if err := tx.QueryRow(ctx, `SELECT id, content_hash, price_cents FROM listings
+	var hidden bool
+	if err := tx.QueryRow(ctx, `SELECT id, content_hash, price_cents, hidden FROM listings
 		WHERE source = $1 AND external_id = $2 FOR UPDATE`,
-		c.Source, c.ExternalID).Scan(&id, &oldHash, &oldPrice); err != nil {
+		c.Source, c.ExternalID).Scan(&id, &oldHash, &oldPrice, &hidden); err != nil {
 		return upsertResult{}, fmt.Errorf("load listing: %w", err)
 	}
 
@@ -213,7 +215,7 @@ func upsertListing(ctx context.Context, tx pgx.Tx, c listing.Canonical, raw json
 			WHERE id = $1`, id, b.SeenAt, string(c.Status)); err != nil {
 			return upsertResult{}, fmt.Errorf("touch listing: %w", err)
 		}
-		return upsertResult{listingID: id, kind: kindSeen}, nil
+		return upsertResult{listingID: id, kind: kindSeen, hidden: hidden}, nil
 	}
 
 	if _, err := tx.Exec(ctx, `UPDATE listings SET
@@ -232,7 +234,7 @@ func upsertListing(ctx context.Context, tx pgx.Tx, c listing.Canonical, raw json
 	if err := insertSnapshot(ctx, tx, id, c, raw, b); err != nil {
 		return upsertResult{}, err
 	}
-	return upsertResult{listingID: id, kind: kindChanged, oldPrice: oldPrice}, nil
+	return upsertResult{listingID: id, kind: kindChanged, oldPrice: oldPrice, hidden: hidden}, nil
 }
 
 func insertSnapshot(ctx context.Context, tx pgx.Tx, listingID int64, c listing.Canonical, raw json.RawMessage, b Batch) error {

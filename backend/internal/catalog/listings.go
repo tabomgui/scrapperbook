@@ -25,6 +25,7 @@ type Listing struct {
 	ImageURL    *string   `json:"image_url,omitempty"`
 	SellerName  *string   `json:"seller_name,omitempty"`
 	Status      string    `json:"status"`
+	Hidden      bool      `json:"hidden"`
 	FirstSeenAt time.Time `json:"first_seen_at"`
 	LastSeenAt  time.Time `json:"last_seen_at"`
 }
@@ -43,6 +44,7 @@ type ListingFilter struct {
 	MinPrice *int64
 	MaxPrice *int64
 	Status   *string
+	Hidden   *bool  // nil means no filter (both shown)
 	Sort     string // "first_seen_at"|"last_seen_at"|"price_cents", "-" prefix for descending
 	Limit    int    // 0 or >200 falls back to 50
 }
@@ -72,7 +74,7 @@ func sortClause(sort string) string {
 
 func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]Listing, error) {
 	query := `SELECT l.id, l.source, l.external_id, l.url, l.title, l.description, l.price_cents,
-	                  l.currency, l.city, l.state, l.image_url, l.seller_name, l.status,
+	                  l.currency, l.city, l.state, l.image_url, l.seller_name, l.status, l.hidden,
 	                  l.first_seen_at, l.last_seen_at
 	           FROM listings l`
 	var where []string
@@ -100,6 +102,9 @@ func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]L
 	if f.Status != nil {
 		where = append(where, "l.status = "+arg(*f.Status))
 	}
+	if f.Hidden != nil {
+		where = append(where, "l.hidden = "+arg(*f.Hidden))
+	}
 	if len(where) > 0 {
 		query += " WHERE " + strings.Join(where, " AND ")
 	}
@@ -119,7 +124,7 @@ func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]L
 	for rows.Next() {
 		var l Listing
 		if err := rows.Scan(&l.ID, &l.Source, &l.ExternalID, &l.URL, &l.Title, &l.Description, &l.PriceCents,
-			&l.Currency, &l.City, &l.State, &l.ImageURL, &l.SellerName, &l.Status,
+			&l.Currency, &l.City, &l.State, &l.ImageURL, &l.SellerName, &l.Status, &l.Hidden,
 			&l.FirstSeenAt, &l.LastSeenAt); err != nil {
 			return nil, fmt.Errorf("scan listing: %w", err)
 		}
@@ -131,10 +136,10 @@ func ListListings(ctx context.Context, pool *pgxpool.Pool, f ListingFilter) ([]L
 func GetListing(ctx context.Context, pool *pgxpool.Pool, id int64) (Listing, []Snapshot, error) {
 	var l Listing
 	err := pool.QueryRow(ctx, `SELECT id, source, external_id, url, title, description, price_cents,
-		currency, city, state, image_url, seller_name, status, first_seen_at, last_seen_at
+		currency, city, state, image_url, seller_name, status, hidden, first_seen_at, last_seen_at
 		FROM listings WHERE id = $1`, id).Scan(
 		&l.ID, &l.Source, &l.ExternalID, &l.URL, &l.Title, &l.Description, &l.PriceCents,
-		&l.Currency, &l.City, &l.State, &l.ImageURL, &l.SellerName, &l.Status, &l.FirstSeenAt, &l.LastSeenAt)
+		&l.Currency, &l.City, &l.State, &l.ImageURL, &l.SellerName, &l.Status, &l.Hidden, &l.FirstSeenAt, &l.LastSeenAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Listing{}, nil, ErrNotFound
 	}
@@ -157,4 +162,18 @@ func GetListing(ctx context.Context, pool *pgxpool.Pool, id int64) (Listing, []S
 		snaps = append(snaps, s)
 	}
 	return l, snaps, rows.Err()
+}
+
+// SetListingHidden is the third writer to listings, alongside ingest.Service
+// and sweep.MarkUnseen — a user-driven flag, independent of the
+// crawler-owned status column.
+func SetListingHidden(ctx context.Context, pool *pgxpool.Pool, id int64, hidden bool) error {
+	tag, err := pool.Exec(ctx, `UPDATE listings SET hidden = $2, updated_at = now() WHERE id = $1`, id, hidden)
+	if err != nil {
+		return fmt.Errorf("set listing %d hidden=%v: %w", id, hidden, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }

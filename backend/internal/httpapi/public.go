@@ -11,14 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"scrapperbook/backend/internal/jobs"
+	"scrapperbook/backend/internal/scheduler"
 	"scrapperbook/backend/internal/workers"
 )
 
 type Public struct {
-	Pool    *pgxpool.Pool
-	Queue   *jobs.Queue
-	Workers *workers.Registry
-	Log     *slog.Logger
+	Pool      *pgxpool.Pool
+	Queue     *jobs.Queue
+	Workers   *workers.Registry
+	Scheduler *scheduler.Scheduler
+	Log       *slog.Logger
 }
 
 func (h *Public) Routes(mux *http.ServeMux) {
@@ -27,6 +29,7 @@ func (h *Public) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/searches/{id}", h.getSearch)
 	mux.HandleFunc("PATCH /api/v1/searches/{id}", h.updateSearch)
 	mux.HandleFunc("DELETE /api/v1/searches/{id}", h.deleteSearch)
+	mux.HandleFunc("POST /api/v1/searches/{id}/run", h.runSearch)
 
 	mux.HandleFunc("GET /api/v1/regions", h.listRegions)
 	mux.HandleFunc("POST /api/v1/regions", h.createRegion)
@@ -34,6 +37,8 @@ func (h *Public) Routes(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /api/v1/listings", h.listListings)
 	mux.HandleFunc("GET /api/v1/listings/{id}", h.getListing)
+	mux.HandleFunc("POST /api/v1/listings/{id}/hide", h.hideListing)
+	mux.HandleFunc("POST /api/v1/listings/{id}/unhide", h.unhideListing)
 
 	mux.HandleFunc("GET /api/v1/jobs", h.listJobs)
 	mux.HandleFunc("GET /api/v1/workers", h.listWorkers)

@@ -4,6 +4,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -60,6 +61,63 @@ type payload struct {
 type dueSearch struct {
 	search   searchPayload
 	priority int
+}
+
+// ErrSearchNotFound is returned by RunNow for an unknown search id.
+var ErrSearchNotFound = errors.New("search not found")
+
+// RunNow enqueues jobs for a search's enabled regions immediately, using
+// the same dedup-safe Enqueue path Tick uses (so a region with an
+// already-queued/running job for this search is silently skipped, not
+// duplicated). Unlike Tick: it ignores the search's own enabled flag (a
+// disabled search can still be run manually) and never touches
+// next_run_at. It does NOT bypass jobs.Queue's claim-time rate limits —
+// those still apply to a manually-enqueued job exactly as they do to an
+// automatic one.
+func (s *Scheduler) RunNow(ctx context.Context, searchID string) (int, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	var d dueSearch
+	err = tx.QueryRow(ctx, `SELECT id, keyword, filters, priority FROM search_definitions
+		WHERE id = $1`, searchID).Scan(&d.search.ID, &d.search.Keyword, &d.search.Filters, &d.priority)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, ErrSearchNotFound
+	}
+	if err != nil {
+		return 0, fmt.Errorf("load search %s: %w", searchID, err)
+	}
+
+	regions, err := regionsFor(ctx, tx, d.search.ID)
+	if err != nil {
+		return 0, err
+	}
+	created := 0
+	for _, rg := range regions {
+		raw, err := json.Marshal(payload{Search: d.search, Region: rg, Limits: s.limits})
+		if err != nil {
+			return 0, err
+		}
+		for _, src := range s.sources {
+			ok, err := s.queue.Enqueue(ctx, tx, jobs.NewJob{
+				Type: "search", Source: src, SearchID: d.search.ID, RegionID: rg.ID,
+				Priority: d.priority, Payload: raw,
+			})
+			if err != nil {
+				return 0, err
+			}
+			if ok {
+				created++
+			}
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return created, nil
 }
 
 // Tick enqueues jobs for every due search and returns how many were created.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"scrapperbook/backend/internal/catalog"
+	"scrapperbook/backend/internal/scheduler"
 )
 
 func (h *Public) listSearches(w http.ResponseWriter, r *http.Request) {
@@ -103,4 +104,22 @@ func (h *Public) deleteSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Public) runSearch(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !isUUID(id) {
+		writeError(w, http.StatusNotFound, "search not found")
+		return
+	}
+	n, err := h.Scheduler.RunNow(r.Context(), id)
+	if errors.Is(err, scheduler.ErrSearchNotFound) {
+		writeError(w, http.StatusNotFound, "search not found")
+		return
+	}
+	if err != nil {
+		internalErrorPublic(w, h.Log, "run search", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"jobs_enqueued": n})
 }

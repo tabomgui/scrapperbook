@@ -62,7 +62,7 @@ func run(log *slog.Logger) error {
 		Ingest:  ingest.New(ingest.NewRegistry(facebook.Normalizer{}), log),
 		Log:     log,
 	}
-	public := &httpapi.Public{Pool: pool, Queue: queue, Workers: workers.New(pool), Log: log}
+	public := &httpapi.Public{Pool: pool, Queue: queue, Workers: workers.New(pool), Scheduler: sched, Log: log}
 
 	// A nil drainer disables the Discord drain step in background() below —
 	// there's nothing to send to without a webhook URL, and that's a valid,

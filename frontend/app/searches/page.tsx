@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { apiFetchList } from "@/lib/api";
 import type { Region, Search } from "@/lib/types";
-import { deleteSearchAction } from "./actions";
+import { deleteSearchAction, runSearchAction } from "./actions";
 
 export default async function SearchesPage() {
   const [searches, regions] = await Promise.all([
@@ -39,6 +39,11 @@ export default async function SearchesPage() {
                 <td>{Math.round(s.frequency_seconds / 60)} min</td>
                 <td>{s.region_ids.map((id) => regionNameById.get(id) ?? id).join(", ") || "—"}</td>
                 <td className="space-x-2 text-right">
+                  <form action={runSearchAction.bind(null, s.id)} className="inline">
+                    <button type="submit" className="text-slate-600 hover:text-slate-900">
+                      executar agora
+                    </button>
+                  </form>
                   <Link href={`/searches/${s.id}/edit`} className="text-slate-600 hover:text-slate-900">
                     editar
                   </Link>
