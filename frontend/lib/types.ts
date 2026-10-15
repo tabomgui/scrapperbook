@@ -61,6 +61,14 @@ export interface JobSummary {
   created_at: string;
   started_at?: string;
   finished_at?: string;
+  search_name?: string;
+  region_name?: string;
+  result_new?: number;
+  result_changed?: number;
+  result_seen?: number;
+  result_invalid?: number;
+  result_irrelevant?: number;
+  result_alerts?: number;
 }
 
 export interface Worker {

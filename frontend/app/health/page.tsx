@@ -1,6 +1,27 @@
 import { apiFetch, apiFetchList } from "@/lib/api";
+import { formatDuration } from "@/lib/format";
 import type { JobSummary, SourceSession, Stats, Worker } from "@/lib/types";
 import { resumeSessionAction } from "./actions";
+
+function jobDuration(j: JobSummary): string {
+  if (j.started_at && j.finished_at) {
+    const seconds = Math.max(
+      0,
+      Math.round((new Date(j.finished_at).getTime() - new Date(j.started_at).getTime()) / 1000),
+    );
+    return formatDuration(seconds);
+  }
+  if (j.status === "running" && j.started_at) {
+    const seconds = Math.max(0, Math.round((Date.now() - new Date(j.started_at).getTime()) / 1000));
+    return `rodando há ${formatDuration(seconds)}`;
+  }
+  return "—";
+}
+
+function jobResults(j: JobSummary): string {
+  if (j.result_new == null) return "—";
+  return `${j.result_new} novos · ${j.result_changed ?? 0} alterados · ${j.result_alerts ?? 0} alertas`;
+}
 
 export default async function HealthPage({
   searchParams,
@@ -134,9 +155,13 @@ export default async function HealthPage({
           <thead>
             <tr className="border-b border-slate-200 text-left text-slate-500">
               <th className="py-2">Fonte</th>
+              <th>Busca</th>
+              <th>Região</th>
               <th>Status</th>
+              <th>Duração</th>
               <th>Tentativas</th>
               <th>Erro</th>
+              <th>Encontrados</th>
               <th>Criado em</th>
             </tr>
           </thead>
@@ -144,9 +169,13 @@ export default async function HealthPage({
             {jobs.map((j) => (
               <tr key={j.id} className="border-b border-slate-100">
                 <td className="py-2">{j.source}</td>
+                <td>{j.search_name ?? "—"}</td>
+                <td>{j.region_name ?? "—"}</td>
                 <td>{j.status}</td>
+                <td>{jobDuration(j)}</td>
                 <td>{j.attempts}</td>
                 <td>{j.error_kind ?? "—"}</td>
+                <td>{jobResults(j)}</td>
                 <td>{new Date(j.created_at).toLocaleString("pt-BR")}</td>
               </tr>
             ))}
