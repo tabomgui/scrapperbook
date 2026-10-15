@@ -196,3 +196,30 @@ func TestHeartbeatUnknownWorker(t *testing.T) {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }
+
+func TestResultPersistsStatsOnJob(t *testing.T) {
+	e := setup(t)
+	e.enqueue(t)
+	_, job := e.post(t, "/internal/v1/jobs/claim", claimBody())
+	jobID := job["job_id"].(string)
+
+	result := map[string]any{
+		"worker_id": "w1", "attempt": 1, "crawler_version": "0.1.0", "parser_version": "fb-1",
+		"items": []any{item("1", "Honda Civic EG 1993", "23500"), item("2", "Honda Civic EG5 1994", "21000")},
+		"stats": map[string]any{"pages": 1, "duration_ms": 1200},
+	}
+	resp, _ := e.post(t, "/internal/v1/jobs/"+jobID+"/result", result)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("result status = %d", resp.StatusCode)
+	}
+
+	var resultNew, resultChanged, resultSeen, resultInvalid, resultIrrelevant, resultAlerts int
+	if err := e.pool.QueryRow(context.Background(), `SELECT result_new, result_changed, result_seen,
+		result_invalid, result_irrelevant, result_alerts FROM jobs WHERE id = $1`, jobID).Scan(
+		&resultNew, &resultChanged, &resultSeen, &resultInvalid, &resultIrrelevant, &resultAlerts); err != nil {
+		t.Fatal(err)
+	}
+	if resultNew != 2 || resultChanged != 0 {
+		t.Fatalf("result_new=%d result_changed=%d, want new=2 changed=0", resultNew, resultChanged)
+	}
+}

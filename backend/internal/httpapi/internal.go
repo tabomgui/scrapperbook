@@ -175,6 +175,10 @@ func (h *Internal) result(w http.ResponseWriter, r *http.Request) {
 		h.internalError(w, "ingest", err, "job_id", id, "worker_id", req.WorkerID)
 		return
 	}
+	if err := h.Queue.RecordResult(ctx, tx, id, stats.New, stats.Changed, stats.Seen, stats.Invalid, stats.Irrelevant, stats.Alerts); err != nil {
+		h.internalError(w, "record result", err, "job_id", id, "worker_id", req.WorkerID)
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		h.internalError(w, "commit", err, "job_id", id, "worker_id", req.WorkerID)
 		return
