@@ -10,6 +10,14 @@ function parseFrequencyMinutes(raw: FormDataEntryValue | null): number {
   return Math.round(Number(raw) * 60);
 }
 
+// A search with no `alert` sent at all is stored by the backend as
+// `alert = '{}'` (catalog.orEmptyJSON) — valid JSON, but every rule in
+// AlertRule.Matches/WantsNew/WantsPriceDrop defaults to "off" for a
+// missing field, so `{}` silently means "never notify for this search".
+// The dashboard has no UI for customizing this yet, so every search
+// created here gets the same sensible default instead of going silent.
+const DEFAULT_ALERT = { enabled: true, on_new: true, on_price_drop: true, min_drop_pct: 5 };
+
 // Unchecked checkboxes are omitted from FormData entirely (not sent as
 // "false"), so `formData.get("enabled") === "on"` is what correctly
 // distinguishes checked from unchecked — don't "simplify" this check.
@@ -21,6 +29,7 @@ export async function createSearchAction(formData: FormData): Promise<ActionResu
     priority: Number(formData.get("priority") ?? 0),
     frequency_seconds: parseFrequencyMinutes(formData.get("frequency_minutes")),
     region_ids: formData.getAll("region_ids").map(String),
+    alert: DEFAULT_ALERT,
   };
   try {
     await apiFetch("/api/v1/searches", { method: "POST", body: JSON.stringify(body) });
